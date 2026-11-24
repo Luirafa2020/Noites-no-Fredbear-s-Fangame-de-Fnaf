@@ -16,6 +16,16 @@ export class HorrorAudio {
     this.jingleEl.preload = 'auto';
     this.jingleEl.volume = 0.95;
 
+    this.flashBuffer = null;
+    this.flashEl = new Audio('./flash.mp3');
+    this.flashEl.preload = 'auto';
+    this.flashEl.volume = 0.95;
+
+    this.honkBuffer = null;
+    this.honkEl = new Audio('./honk_nose.mp3');
+    this.honkEl.preload = 'auto';
+    this.honkEl.volume = 0.95;
+
     this.phoneEl = new Audio();
     this.phoneEl.preload = 'auto';
     this.phoneEl.volume = 0.95;
@@ -45,9 +55,13 @@ export class HorrorAudio {
 
     if (!this.jumpscareBuffer) this.jumpscareBuffer = await decodeAsset('./jumpscare.mp3');
     if (!this.jingleBuffer) this.jingleBuffer = await decodeAsset('./jingle.mp3');
+    if (!this.flashBuffer) this.flashBuffer = await decodeAsset('./flash.mp3');
+    if (!this.honkBuffer) this.honkBuffer = await decodeAsset('./honk_nose.mp3');
 
     try { this.jumpscareEl.load(); } catch {}
     try { this.jingleEl.load(); } catch {}
+    try { this.flashEl.load(); } catch {}
+    try { this.honkEl.load(); } catch {}
   }
 
   async init() {
@@ -383,6 +397,33 @@ export class HorrorAudio {
   }
 
   playFlashBulb() {
+    if (this.flashBuffer && Tone.context && Tone.context.rawContext) {
+      try {
+        const ctx = Tone.context.rawContext;
+        const src = ctx.createBufferSource();
+        src.buffer = this.flashBuffer;
+        const gain = ctx.createGain();
+        gain.gain.value = 0.95;
+        src.connect(gain);
+        gain.connect(ctx.destination);
+        src.start(0);
+        return;
+      } catch {}
+    }
+
+    try {
+      this.flashEl.currentTime = 0;
+      const p = this.flashEl.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => this.playSynthFlashFallback());
+      }
+      return;
+    } catch {}
+
+    this.playSynthFlashFallback();
+  }
+
+  playSynthFlashFallback() {
     if (!this.ready) return;
     try {
       const osc = new Tone.Oscillator(1700, 'sine');
@@ -394,6 +435,33 @@ export class HorrorAudio {
   }
 
   playPlushBoop() {
+    if (this.honkBuffer && Tone.context && Tone.context.rawContext) {
+      try {
+        const ctx = Tone.context.rawContext;
+        const src = ctx.createBufferSource();
+        src.buffer = this.honkBuffer;
+        const gain = ctx.createGain();
+        gain.gain.value = 0.95;
+        src.connect(gain);
+        gain.connect(ctx.destination);
+        src.start(0);
+        return;
+      } catch {}
+    }
+
+    try {
+      this.honkEl.currentTime = 0;
+      const p = this.honkEl.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => this.playSynthBoopFallback());
+      }
+      return;
+    } catch {}
+
+    this.playSynthBoopFallback();
+  }
+
+  playSynthBoopFallback() {
     if (!this.ready) return;
     try {
       const osc = new Tone.Synth({ oscillator: { type: 'sine' }, envelope: { attack: 0.005, decay: 0.12, sustain: 0 } }).connect(this.limiter);
