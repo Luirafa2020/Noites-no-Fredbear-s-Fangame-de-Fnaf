@@ -73,6 +73,12 @@ button, input, dialog, section, article, aside, header, main, footer, div {
   box-shadow: inset 0 0 110px rgba(0, 0, 0, 0.9);
 }
 
+.cctv-open .scanline-overlay,
+.cctv-open .vignette-frame,
+.cctv-open #phone-box.active {
+  display: none;
+}
+
 .screen {
   position: fixed;
   inset: 0;
@@ -139,7 +145,10 @@ button, input, dialog, section, article, aside, header, main, footer, div {
 #menu-screen {
   justify-content: space-between;
   align-items: flex-start;
-  padding: clamp(22px, 4.8vw, 54px);
+  gap: 18px;
+  padding: clamp(18px, 4.3vh, 46px) clamp(20px, 4.6vw, 54px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: linear-gradient(
     98deg,
     rgba(2, 2, 4, 0.95) 0%,
@@ -328,8 +337,17 @@ button, input, dialog, section, article, aside, header, main, footer, div {
 
 .quality-toggle {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+@media (max-height: 760px) {
+  .game-title { font-size: clamp(2.6rem, 7.8vh, 4.45rem); }
+  .menu-desc { margin-bottom: 13px; }
+  .stars-row { margin-bottom: 10px; }
+  .menu-buttons { gap: 6px; }
+  .menu-buttons .btn-horror { padding-block: 8px; }
 }
 
 .pill-btn {

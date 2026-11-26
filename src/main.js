@@ -1,9 +1,10 @@
 import * as THREE from 'three';
-import { CAM_TRANSFORMS, ROOM_LIGHT_CFGS, saveState, game, animState } from './config.js';
+import { SECURITY_VIEWS, saveState, game, animState } from './config.js';
 import { audio } from './audio.js';
 import { buildTextures } from './textures.js';
-import { applyAnimatronicPose } from './animatronics.js';
-import { setupPostProcessing, volumetricMaterials } from './shaders.js';
+import { applyAnimatronicPose, trackAnimatronicPose, BITE_PROGRESS } from './animatronic-motion.js';
+import { createJumpscareSequence } from './jumpscare.js';
+import { createViewRenderer, volumetricMaterials } from './shaders.js';
 import { buildWorld } from './world.js';
 import { createPixiHUD } from './hud.js';
 import { createGameController } from './ai.js';
@@ -15,9 +16,6 @@ const renderer = new THREE.WebGLRenderer({
   antialias: false,
   powerPreference: 'high-performance'
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, saveState.quality === 'high' ? 1.25 : 0.9));
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = saveState.quality === 'high';
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.08;
@@ -29,11 +27,19 @@ scene.fog = new THREE.FogExp2(0x020203, 0.088);
 const officeCamera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 60);
 officeCamera.position.set(0, 1.52, 1.42);
 
-const cctvCamera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.1, 60);
-
-const { composer, bloomPass, crtPass } = setupPostProcessing(renderer, scene, officeCamera);
+const securityCameras = SECURITY_VIEWS.map(view => {
+  const camera = new THREE.PerspectiveCamera(view.fov, 1, 0.055, 38);
+  camera.position.fromArray(view.pos);
+  camera.lookAt(...view.look);
+  camera.rotateZ(view.roll);
+  return camera;
+});
+const menuFov = 52;
+const menuCamera = new THREE.PerspectiveCamera(menuFov, 1, 0.08, 38);
+const viewRenderer = createViewRenderer(renderer, scene);
 const textures = buildTextures();
 const world = buildWorld(scene, textures);
+const jumpscareSequence = createJumpscareSequence(officeCamera, world);
 const hud = createPixiHUD();
 
 let ui = null;
@@ -44,31 +50,96 @@ const controller = createGameController({
   showScreen: id => ui && ui.showScreen(id)
 });
 
-ui = setupUI({
-  world,
-  hud,
-  controller,
-  renderer,
-  officeCamera,
-  cctvCamera,
-  composer,
-  bloomPass
-});
+let graphicsDirty = true;
+function resizeGraphics() {
+  const width = Math.max(1, window.innerWidth);
+  const height = Math.max(1, window.innerHeight);
+  const aspect = width / height;
+  const high = saveState.quality === 'high';
+  viewRenderer.resize(width, height, high);
+  renderer.shadowMap.enabled = high;
+  officeCamera.aspect = aspect;
+  officeCamera.updateProjectionMatrix();
+  const portraitScale = Math.min(1.45, Math.max(1, 1.34 / aspect));
+  menuCamera.aspect = aspect;
+  menuCamera.fov = menuFov * portraitScale;
+  menuCamera.updateProjectionMatrix();
+  securityCameras.forEach((camera, i) => {
+    camera.aspect = aspect;
+    camera.fov = SECURITY_VIEWS[i].fov * portraitScale;
+    camera.updateProjectionMatrix();
+  });
+  hud.layoutPixiUI();
+  graphicsDirty = true;
+}
 
+ui = setupUI({ world, hud, controller, officeCamera, resizeGraphics });
+resizeGraphics();
+
+const flashlightDirection = new THREE.Vector3();
+const phoneBox = document.getElementById('phone-box');
+const phoneTitle = document.getElementById('phone-caller-title');
+const phoneTimer = document.getElementById('phone-timer');
+const frame = {};
 let lastTime = performance.now();
+let lastDraw = -1;
+let lastMode = '';
+let lastCamera = null;
+let litView = null;
+
+function setViewLighting(view, camera, monitor, high, elapsed) {
+  const cctv = Boolean(view);
+  world.officeLamp.visible = !cctv && game.mode !== 'POWEROUT';
+  world.officeLamp.castShadow = high && world.officeLamp.visible && game.mode !== 'JUMPSCARE';
+  world.crtDeskGlow.visible = !cctv;
+  world.hallLightL.visible = !cctv && world.hallLightL.intensity > 0;
+  world.hallLightR.visible = !cctv && world.hallLightR.intensity > 0;
+  world.flashlight.visible = !cctv && world.flashlight.intensity > 0 && game.mode !== 'JUMPSCARE' && game.mode !== 'POWEROUT';
+  world.jumpscareLight.visible = world.jumpscareRim.visible = game.mode === 'JUMPSCARE';
+  world.securityKey.visible = cctv;
+  world.securityFill.visible = cctv;
+  world.securityIR.visible = monitor && game.camFlashAlpha > 0.02;
+  world.securityKey.castShadow = high && cctv;
+  world.dustParticles.visible = high && (!monitor || game.activeCam < 2);
+  scene.fog.density = cctv ? (monitor && game.activeCam === 6 ? 0.074 : 0.052) : 0.077;
+  for (const cone of world.stageCones) cone.visible = high && cctv && (!monitor || game.activeCam === 0);
+
+  if (view !== litView) {
+    litView = view;
+    if (view) {
+      world.securityKey.position.fromArray(view.key);
+      world.securityKey.target.position.fromArray(view.look);
+      world.securityKey.color.setHex(view.light);
+      world.securityFill.position.fromArray(view.fill);
+      world.securityFill.color.setHex(view.fillColor ?? view.light);
+      world.securityFill.intensity = view.fillIntensity ?? 5.1;
+    }
+  }
+
+  if (!view) return;
+  world.securityKey.intensity = view.intensity * (0.97 + 0.03 * Math.sin(elapsed * 29));
+  if (monitor && game.activeCam > 1) world.securityKey.intensity *= 0.60 + 0.40 * game.flickerIntensity;
+  if (world.securityIR.visible) {
+    world.securityIR.position.copy(camera.position);
+    world.securityIR.target.position.fromArray(view.look);
+    world.securityIR.intensity = 98 * game.camFlashAlpha;
+  }
+}
 
 function animate(now) {
   requestAnimationFrame(animate);
-  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  const dt = Math.min(0.1, Math.max(0, (now - lastTime) / 1000));
   lastTime = now;
   const elapsed = now / 1000;
   const highQuality = saveState.quality === 'high';
+  const still = ['SPLASH', 'PAUSED', 'WIN', 'GAMEOVER'].includes(game.mode);
+  if (still && game.mode === lastMode && !graphicsDirty) return;
 
   for (let i = 0; i < volumetricMaterials.length; i++) {
     volumetricMaterials[i].uniforms.uTime.value = elapsed;
   }
 
-  if (game.mode !== 'POWEROUT' && game.mode !== 'PAUSED') {
+  if (game.mode !== 'POWEROUT' && !still) {
     world.fanBlades.rotation.z += dt * 19.0;
     world.ductFan.rotation.z -= dt * 8.0;
     world.officeVentFan.rotation.z -= dt * 7.2;
@@ -151,9 +222,8 @@ function animate(now) {
       if (game.flashlightPower <= 0) game.flashlightOn = false;
       world.flashlight.intensity = 15.0;
       world.flashlight.castShadow = highQuality;
-      const dir = new THREE.Vector3(game.mouseNormX * 0.35, game.mouseNormY * 0.30, -1).normalize();
-      dir.applyQuaternion(officeCamera.quaternion);
-      world.flashlight.target.position.copy(officeCamera.position).addScaledVector(dir, 5.0);
+      flashlightDirection.set(game.mouseNormX * 0.35, game.mouseNormY * 0.30, -1).normalize().applyQuaternion(officeCamera.quaternion);
+      world.flashlight.target.position.copy(officeCamera.position).addScaledVector(flashlightDirection, 5.0);
       world.flashVolCone.visible = true;
       world.flashVolCone.position.copy(world.flashlight.position);
       world.flashVolCone.lookAt(world.flashlight.target.position);
@@ -185,15 +255,16 @@ function animate(now) {
       return;
     }
 
-    const phoneBox = document.getElementById('phone-box');
     if (game.phoneActive && !game.phoneMuted) {
       game.phoneElapsed += dt;
       const tSec = Math.floor(audio.getPhoneTime());
       const mm = String(Math.floor(tSec / 60)).padStart(2, '0');
       const ss = String(tSec % 60).padStart(2, '0');
       phoneBox.classList.add('active');
-      document.getElementById('phone-caller-title').textContent = `☎ CHAMADA DO GERENTE — NOITE ${game.night}`;
-      document.getElementById('phone-timer').textContent = `${mm}:${ss}`;
+      const phoneLabel = `☎ CHAMADA DO GERENTE — NOITE ${game.night}`;
+      const timeLabel = `${mm}:${ss}`;
+      if (phoneTitle.textContent !== phoneLabel) phoneTitle.textContent = phoneLabel;
+      if (phoneTimer.textContent !== timeLabel) phoneTimer.textContent = timeLabel;
     } else {
       phoneBox.classList.remove('active');
     }
@@ -210,54 +281,26 @@ function animate(now) {
     world.hallLightL.castShadow = false;
     world.hallLightR.castShadow = false;
     controller.updatePowerOutage(dt);
-  } else if (game.mode === 'JUMPSCARE') {
+  }
+
+  if (game.mode === 'JUMPSCARE') {
     game.jumpscareElapsed += dt;
     world.flashVolCone.visible = false;
     world.flashlight.castShadow = false;
-    const p = THREE.MathUtils.clamp(game.jumpscareElapsed / game.jumpscareDuration, 0, 1);
-
-    game.lookCurrentX = THREE.MathUtils.lerp(game.lookCurrentX, 0.0, Math.min(1, dt * 16));
-    game.lookCurrentY = THREE.MathUtils.lerp(game.lookCurrentY, 0.04, Math.min(1, dt * 16));
-
-    if (p >= 0.68 && !game.jumpscareBiteDone) {
+    const progress = jumpscareSequence.update(game);
+    game.biteFlash = Math.max(0, game.biteFlash - dt * 5.2);
+    if (progress >= BITE_PROGRESS && !game.jumpscareBiteDone) {
       game.jumpscareBiteDone = true;
-      game.biteFlash = 1.0;
+      game.biteFlash = 0.86;
       audio.playBiteCrunch();
     }
-    game.biteFlash = Math.max(0, game.biteFlash - dt * 2.8);
+    world.officeLamp.intensity = 0.43;
 
-    let fovKick = 62;
-    if (p < 0.36) fovKick = THREE.MathUtils.lerp(62, 68, p / 0.36);
-    else if (p < 0.68) fovKick = THREE.MathUtils.lerp(68, 84, (p - 0.36) / 0.32);
-    else fovKick = THREE.MathUtils.lerp(84, 58, Math.min(1, (p - 0.68) / 0.14));
-    officeCamera.fov = fovKick;
-    officeCamera.updateProjectionMatrix();
-
-    const camShake = p < 0.36 ? 0.035 : p < 0.66 ? 0.075 : 0.24;
-    officeCamera.rotation.order = 'YXZ';
-    officeCamera.rotation.z = (Math.random() - 0.5) * camShake;
-    officeCamera.rotation.x = game.lookCurrentY + (Math.random() - 0.5) * camShake * 0.85;
-    officeCamera.rotation.y = game.lookCurrentX + (Math.random() - 0.5) * camShake * 0.65;
-
-    world.officeLamp.intensity = 0.25;
-    const strobe = Math.random();
-    if (p > 0.66 && p < 0.74) {
-      world.jumpscareLight.color.setHex(0xff1118);
-      world.jumpscareLight.intensity = 13.0;
-    } else if (strobe < 0.12) {
-      world.jumpscareLight.intensity = 0.4;
-    } else {
-      world.jumpscareLight.color.setHex(strobe > 0.42 ? 0xfff0d6 : 0xff2228);
-      world.jumpscareLight.intensity = 7.5 + Math.random() * 5.5;
-    }
-
-    if (game.jumpscareElapsed >= game.jumpscareDuration) {
+    if (progress >= 1) {
       game.mode = 'GAMEOVER';
       world.jumpscareLight.intensity = 0;
-      officeCamera.rotation.z = 0;
-      officeCamera.near = 0.1;
-      officeCamera.fov = 62;
-      officeCamera.updateProjectionMatrix();
+      world.jumpscareRim.intensity = 0;
+      jumpscareSequence.reset();
       const whoName = game.jumpscareWho === 'bonnie' ? 'SpringBonnie' : 'SpringFreddy';
       document.getElementById('gameover-report').textContent =
         `RELATÓRIO DE INCIDENTE #83: O vigia foi capturado por ${whoName} às ${game.hour === 0 ? '12' : game.hour}:00 AM. Traumas cranianos compatíveis com mordida hidráulica Springlock.`;
@@ -265,89 +308,71 @@ function animate(now) {
     }
   }
 
-  if (game.mode === 'MENU' || game.mode === 'NEWSPAPER') {
-    const ct = CAM_TRANSFORMS[0];
-    cctvCamera.position.set(ct.pos[0] + Math.sin(elapsed * 0.4) * 0.55, ct.pos[1] - 0.65, ct.pos[2] + 0.8);
-    cctvCamera.lookAt(0, 1.55, -22.6);
-    const fTwitch = Math.sin(elapsed * 3.1) > 0.92 ? 0.6 : 0.04;
-    const bTwitch = Math.sin(elapsed * 2.3) > 0.94 ? 0.7 : 0.05;
-    applyAnimatronicPose(world.freddyRig, 'STAGE', elapsed, fTwitch, Math.sin(elapsed * 0.7) > 0.96);
-    applyAnimatronicPose(world.bonnieRig, 'STAGE', elapsed + 1.2, bTwitch, Math.cos(elapsed * 0.6) > 0.97);
-    world.cctvRoomLight.intensity = 5.4 * game.flickerIntensity;
-  } else if (game.mode === 'JUMPSCARE') {
-    const jp = THREE.MathUtils.clamp(game.jumpscareElapsed / game.jumpscareDuration, 0, 1);
-    applyAnimatronicPose(world.freddyRig, 'JUMPSCARE', elapsed, 0.95, true, null, jp);
-    applyAnimatronicPose(world.bonnieRig, 'JUMPSCARE', elapsed, 0.95, true, null, jp);
-  } else {
-    const camDirF = new THREE.Vector3().subVectors(cctvCamera.position, world.freddyRig.root.position);
-    const camDirB = new THREE.Vector3().subVectors(cctvCamera.position, world.bonnieRig.root.position);
-    applyAnimatronicPose(world.freddyRig, animState.freddy.pose, elapsed, animState.freddy.twitch, animState.freddy.darkEyes, game.monitorOpen ? camDirF : null);
-    applyAnimatronicPose(world.bonnieRig, animState.bonnie.pose, elapsed + 0.8, animState.bonnie.twitch, animState.bonnie.darkEyes, game.monitorOpen ? camDirB : null);
-    if (game.mode === 'POWEROUT') {
-      world.freddyRig.pupilMat.emissiveIntensity = game.powerOutEyeGlow || 0;
+  const menu = game.mode === 'MENU' || game.mode === 'NEWSPAPER';
+  const monitor = game.monitorOpen && (game.mode === 'PLAYING' || game.mode === 'PAUSED');
+  const camera = menu ? menuCamera : monitor ? securityCameras[game.activeCam] : officeCamera;
+  const view = menu ? SECURITY_VIEWS[0] : monitor ? SECURITY_VIEWS[game.activeCam] : null;
+  const flash = monitor ? game.camFlashAlpha : 0;
+  const changed = graphicsDirty || camera !== lastCamera || game.mode !== lastMode;
+  if (!changed && (monitor || menu) && now - lastDraw < 31 && flash <= frame.flash + 0.16) return;
+
+  if (menu) {
+    menuCamera.position.set(0.39 + Math.sin(elapsed * 0.35) * 0.34, 2.07, -19.08);
+    menuCamera.lookAt(menuCamera.aspect < 1.1 ? 0 : -0.28, 1.81, -22.64);
+  }
+
+  const jumpscare = game.mode === 'JUMPSCARE';
+  const freddy = world.freddyRig;
+  const bonnie = world.bonnieRig;
+  if (!jumpscare) controller.syncAnimatronicWorldPositions();
+  freddy.root.visible = menu || (monitor ? animState.freddy.loc === game.activeCam
+    : jumpscare ? game.jumpscareWho === 'freddy' : game.mode === 'POWEROUT' || animState.freddy.loc === 'BLIND_L');
+  bonnie.root.visible = menu || (monitor ? animState.bonnie.loc === game.activeCam
+    : jumpscare ? game.jumpscareWho === 'bonnie'
+      : game.mode !== 'POWEROUT' && (animState.bonnie.loc === 'BLIND_R' || animState.bonnie.loc === 'VENT_OFFICE'));
+
+  if (menu) {
+    applyAnimatronicPose(freddy, 'STAGE', elapsed, 0.09, false, menuCamera.position);
+    applyAnimatronicPose(bonnie, 'STAGE', elapsed, 0.12, false, menuCamera.position);
+  } else if (!jumpscare && (!still || changed)) {
+    const freddyPose = game.mode === 'POWEROUT' ? 'POWEROUT' : animState.freddy.pose;
+    trackAnimatronicPose(freddy, freddyPose, elapsed);
+    trackAnimatronicPose(bonnie, animState.bonnie.pose, elapsed);
+    if (freddy.root.visible) {
+      applyAnimatronicPose(freddy, freddyPose, elapsed, animState.freddy.twitch,
+        animState.freddy.darkEyes, camera.position);
+      if (game.mode === 'POWEROUT') freddy.pupilMat.emissiveIntensity = game.powerOutEyeGlow || 0;
+    }
+    if (bonnie.root.visible) {
+      applyAnimatronicPose(bonnie, animState.bonnie.pose, elapsed, animState.bonnie.twitch, animState.bonnie.darkEyes, camera.position);
     }
   }
 
-  controller.syncAnimatronicWorldPositions();
+  setViewLighting(view, camera, monitor, highQuality, elapsed);
+  frame.time = elapsed;
+  frame.high = highQuality;
+  frame.cctv = monitor;
+  frame.view = view;
+  frame.channel = game.activeCam;
+  frame.flash = flash;
+  frame.glitch = jumpscare ? 0.06 + game.biteFlash * 0.62 : Math.min(1, game.staticBurst + game.camMoveGlitch);
+  frame.powerOut = game.mode === 'POWEROUT';
+  frame.danger = game.dangerLevel;
+  frame.bite = game.biteFlash;
+  viewRenderer.render(camera, frame);
 
-  const useCCTV = (game.mode === 'MENU' || game.mode === 'NEWSPAPER' || (game.mode === 'PLAYING' && game.monitorOpen));
-  if (game.mode === 'PLAYING' && game.monitorOpen) {
-    const ct = CAM_TRANSFORMS[game.activeCam];
-    const panOffset = Math.sin(elapsed * 0.55) * 0.35;
-    cctvCamera.position.set(ct.pos[0], ct.pos[1], ct.pos[2]);
-    cctvCamera.lookAt(ct.look[0] + panOffset, ct.look[1], ct.look[2]);
-    const cfg = ROOM_LIGHT_CFGS[game.activeCam];
-    if (game.camFlashAlpha > 0.05) {
-      world.cctvRoomLight.color.setHex(0xffffff);
-      world.cctvRoomLight.intensity = THREE.MathUtils.lerp(cfg.intensity, 22, game.camFlashAlpha);
-    } else {
-      world.cctvRoomLight.color.setHex(cfg.color);
-      world.cctvRoomLight.intensity = cfg.intensity * (game.activeCam >= 2 ? game.flickerIntensity : 1.0);
-    }
-  }
-
-  const activeCamera = useCCTV ? cctvCamera : officeCamera;
-
-  if (crtPass) {
-    crtPass.uniforms.uTime.value = elapsed;
-    crtPass.uniforms.uIsCCTV.value = (game.mode === 'PLAYING' && game.monitorOpen) ? 1.0 : 0.0;
-    crtPass.uniforms.uGlitch.value = game.mode === 'JUMPSCARE'
-      ? (0.55 + game.biteFlash * 0.45)
-      : Math.min(1.0, game.staticBurst + game.camMoveGlitch + (game.mode === 'MENU' ? 0.08 : 0));
-    crtPass.uniforms.uPowerOut.value = game.mode === 'POWEROUT' ? 1.0 : 0.0;
-    crtPass.uniforms.uDanger.value = game.dangerLevel;
-    crtPass.uniforms.uBiteFlash.value = game.biteFlash;
-  }
-
-  if (composer) {
-    composer.passes[0].camera = activeCamera;
-    composer.render();
-  } else {
-    renderer.render(scene, activeCamera);
-  }
-
-  hud.updatePixiHUD(dt, elapsed);
+  document.body.classList.toggle('cctv-open', monitor);
+  hud.updatePixiHUD(Math.min(0.1, (now - lastDraw) / 1000), elapsed);
+  hud.pixiApp.render();
+  lastDraw = now;
+  lastCamera = camera;
+  lastMode = game.mode;
+  graphicsDirty = false;
 }
 
-(function boot() {
-  const bar = document.getElementById('loader-bar');
-  const sub = document.getElementById('loader-sub');
-  const steps = [
-    [28, 'COMPILANDO TEXTURAS PBR, NORMAL MAPS & DUTO 3D...'],
-    [62, 'ESCULPINDO SPRINGFREDDY & SPRINGBONNIE SPRINGLOCK...'],
-    [90, 'CARREGANDO ÁUDIOS (PHONE_GUY N1–N5, JINGLE.MP3 & JUMPSCARE.MP3)...'],
-    [100, 'TURNO NOTURNO PRONTO.']
-  ];
-  let i = 0;
-  const timer = setInterval(() => {
-    if (i < steps.length) {
-      bar.style.width = steps[i][0] + '%';
-      sub.textContent = steps[i][1];
-      i++;
-    } else {
-      clearInterval(timer);
-      ui.returnToMenu();
-      requestAnimationFrame(animate);
-    }
-  }, 210);
-})();
+document.getElementById('loader-bar').style.width = '100%';
+document.getElementById('loader-sub').textContent = 'TURNO NOTURNO PRONTO.';
+requestAnimationFrame(now => {
+  ui.returnToMenu();
+  animate(now);
+});

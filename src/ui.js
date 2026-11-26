@@ -22,7 +22,7 @@ function supportsTopLayerExit() {
   return window.CSS?.supports?.('overlay', 'auto') && canTransitionDisplay();
 }
 
-export function setupUI({ world, hud, controller, renderer, officeCamera, cctvCamera, composer, bloomPass }) {
+export function setupUI({ world, hud, controller, officeCamera, resizeGraphics }) {
   const screens = document.querySelectorAll('.screen');
   const dialogs = document.querySelectorAll('dialog.horror-dialog');
   const nightDialog = document.getElementById('night-modal');
@@ -150,6 +150,7 @@ export function setupUI({ world, hud, controller, renderer, officeCamera, cctvCa
     game.flashlightOn = false;
     game.audioLureCooldown = 0;
     game.flashCooldown = 0;
+    game.camFlashAlpha = 0;
     game.lurePingTimer = 0;
     game.soundSensorTimer = 0;
     game.dangerLevel = 0;
@@ -200,7 +201,6 @@ export function setupUI({ world, hud, controller, renderer, officeCamera, cctvCa
       showScreen(null);
       game.mode = 'PLAYING';
       audio.setFanActive(true);
-      controller.updateRoomLightVisibility();
       if (!custom && PHONE_TRACKS[game.night]) {
         audio.playPhoneBeep();
         audio.startPhoneCall(game.night);
@@ -221,7 +221,6 @@ export function setupUI({ world, hud, controller, renderer, officeCamera, cctvCa
     audio.setFanActive(false);
     audio.setLightBuzz(false);
     audio.setDreadLevel(0);
-    controller.updateRoomLightVisibility();
     refreshMenuStars();
     showScreen('menu-screen');
   }
@@ -346,12 +345,17 @@ export function setupUI({ world, hud, controller, renderer, officeCamera, cctvCa
     }
     if (e.key === 'Escape') {
       if (!document.querySelector('dialog[open]') && game.mode === 'PLAYING') {
+        e.preventDefault();
         openPauseModal();
       }
       return;
     }
     if (game.mode !== 'PLAYING') return;
 
+    if (e.repeat) {
+      if (e.code === 'Space' || e.key === 'Tab') e.preventDefault();
+      return;
+    }
     if (e.code === 'Space' || e.key === 'Tab') { e.preventDefault(); controller.toggleMonitor(); }
     else if (k === 'q') controller.toggleDoor('L');
     else if (k === 'e') controller.toggleDoor('R');
@@ -376,18 +380,7 @@ export function setupUI({ world, hud, controller, renderer, officeCamera, cctvCa
   window.addEventListener('pointerup', handlePointerUp);
   window.addEventListener('contextmenu', e => e.preventDefault());
 
-  window.addEventListener('resize', () => {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    renderer.setSize(w, h);
-    officeCamera.aspect = w / h;
-    officeCamera.updateProjectionMatrix();
-    cctvCamera.aspect = w / h;
-    cctvCamera.updateProjectionMatrix();
-    if (composer) composer.setSize(w, h);
-    if (bloomPass) bloomPass.setSize(Math.floor(w / 2), Math.floor(h / 2));
-    hud.layoutPixiUI();
-  });
+  window.addEventListener('resize', resizeGraphics);
 
   // UI Button Wiring
   document.getElementById('btn-continue').onclick = () => startNight(saveState.unlockedNight, false);
@@ -451,14 +444,7 @@ export function setupUI({ world, hud, controller, renderer, officeCamera, cctvCa
       persistSave();
       document.querySelectorAll('.pill-btn[data-quality]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      const high = saveState.quality === 'high';
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, high ? 1.25 : 0.9));
-      renderer.shadowMap.enabled = high;
-      world.setQualityShadows(high);
-      if (bloomPass) {
-        bloomPass.enabled = high;
-        bloomPass.strength = high ? 0.42 : 0.0;
-      }
+      resizeGraphics();
     };
   });
 

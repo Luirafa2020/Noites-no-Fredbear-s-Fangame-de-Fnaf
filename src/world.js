@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { saveState } from './config.js';
 import { createVolumetricConeMat } from './shaders.js';
 import { buildAnimatronic } from './animatronics.js';
+import { batchMeshes } from './mesh-batching.js';
+import { dressSecurityRooms } from './security-rooms.js';
 
 export function buildWorld(scene, textures) {
   const interactables = [];
@@ -485,13 +487,15 @@ export function buildWorld(scene, textures) {
   officeVolCone.position.y = -1.92;
   lampPivot.add(officeVolCone);
 
-  const officeLamp = new THREE.PointLight(0xffc67a, 2.25, 9.2, 1.65);
+  const officeLamp = new THREE.SpotLight(0xffcc94, 2.25, 8.0, Math.PI * 0.36, 0.5, 1.65);
   officeLamp.position.set(0, -0.62, 0);
-  officeLamp.shadow.mapSize.set(1024, 1024);
+  officeLamp.target.position.set(0, -3.0, -0.22);
+  officeLamp.shadow.mapSize.set(768, 768);
+  officeLamp.shadow.camera.far = 7;
   officeLamp.shadow.bias = -0.0006;
   officeLamp.shadow.normalBias = 0.03;
   officeLamp.castShadow = saveState.quality === 'high';
-  lampPivot.add(officeLamp);
+  lampPivot.add(officeLamp, officeLamp.target);
 
   // Hall Spotlights & Flashlight (Dynamic Shadow Casters in High Mode!)
   const hallLightL = new THREE.SpotLight(0xcfe2ff, 0, 12, Math.PI / 3.3, 0.45, 1.5);
@@ -527,7 +531,8 @@ export function buildWorld(scene, textures) {
 
   const jumpscareLight = new THREE.PointLight(0xfff0d4, 0, 6.0, 1.0);
   jumpscareLight.position.set(0, 1.65, 1.1);
-  scene.add(jumpscareLight);
+  const jumpscareRim = new THREE.PointLight(0x90accd, 0, 4.0, 1.48);
+  scene.add(jumpscareLight, jumpscareRim);
 
   // =========================================================================
   // B. STATIC DINER ROOMS (ENHANCED PROPS & ATMOSPHERE)
@@ -610,22 +615,8 @@ export function buildWorld(scene, textures) {
   const stageMat = new THREE.MeshStandardMaterial({ map: textures.woodColor, normalMap: textures.woodNormal, roughness: 0.72 });
   mkBox(7.2, 0.46, 3.2, stageMat, 0, 0.23, -22.8);
   mkBox(7.25, 0.07, 3.25, brassMat, 0, 0.45, -22.8);
-  const curtainMat = new THREE.MeshStandardMaterial({ map: textures.curtainTex, roughness: 0.9 });
-  mkBox(1.6, 3.0, 0.25, curtainMat, -3.15, 1.7, -21.4);
-  mkBox(1.6, 3.0, 0.25, curtainMat, 3.15, 1.7, -21.4);
+  const curtainMat = new THREE.MeshStandardMaterial({ map: textures.curtainTex, roughness: 0.9, side: THREE.DoubleSide });
   mkBox(7.4, 0.68, 0.32, curtainMat, 0, 3.08, -21.4);
-
-  // Vintage Microphone Stand in front of Fredbear on Stage
-  const micStand = new THREE.Group();
-  micStand.position.set(-0.62, 0.46, -21.85);
-  micStand.add(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 0.03, 12), metalMat));
-  const micPole = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.018, 1.38, 8), metalMat);
-  micPole.position.y = 0.69;
-  micStand.add(micPole);
-  const micHead = new THREE.Mesh(new THREE.SphereGeometry(0.042, 10, 8), new THREE.MeshStandardMaterial({ color: 0x8f96a3, roughness: 0.25, metalness: 0.9 }));
-  micHead.position.set(0, 1.40, 0.03);
-  micStand.add(micHead);
-  scene.add(freezeStatic(micStand));
 
   const marquee = new THREE.Mesh(
     new THREE.BoxGeometry(4.6, 0.80, 0.12),
@@ -725,6 +716,11 @@ export function buildWorld(scene, textures) {
     ductFan.add(p);
   }
 
+  dressSecurityRooms(scene, mkBox, {
+    metal: metalMat, duct: ductWallMat, curtain: curtainMat, wire: wireMatDark,
+    brass: brassMat, tablecloth: tableClothMat
+  });
+
   // =========================================================================
   // C. FLOATING DUST MOTES IN 3D SPACE
   // =========================================================================
@@ -750,24 +746,25 @@ export function buildWorld(scene, textures) {
   scene.add(dustParticles);
 
   // =========================================================================
-  // D. SHARED CCTV LIGHT + ANIMATRONIC RIGS
+  // D. SECURITY LIGHTS + ANIMATRONIC RIGS
   // =========================================================================
-  const cctvRoomLight = new THREE.PointLight(0xffc472, 5.5, 17, 1.3);
-  scene.add(cctvRoomLight);
+  const securityKey = new THREE.SpotLight(0xffd5a0, 26, 17, Math.PI * 0.29, 0.67, 1.5);
+  securityKey.shadow.mapSize.set(512, 512);
+  securityKey.shadow.bias = -0.0006;
+  securityKey.shadow.normalBias = 0.025;
+  securityKey.shadow.camera.far = 16;
+  const securityFill = new THREE.PointLight(0xf2cba3, 3.6, 11, 1.58);
+  const securityIR = new THREE.SpotLight(0xcfe0ff, 0, 18, Math.PI * 0.25, 0.7, 1.3);
+  scene.add(securityKey, securityKey.target, securityFill, securityIR, securityIR.target);
 
   const freddyRig = buildAnimatronic('freddy', textures);
   const bonnieRig = buildAnimatronic('bonnie', textures);
   scene.add(freddyRig.root);
   scene.add(bonnieRig.root);
 
-  function setQualityShadows(high) {
-    officeLamp.castShadow = high;
-    if (!high) {
-      flashlight.castShadow = false;
-      hallLightL.castShadow = false;
-      hallLightR.castShadow = false;
-    }
-  }
+  const clickable = new Set(interactables);
+  batchMeshes(scene, mesh => !mesh.matrixAutoUpdate && !clickable.has(mesh), mesh =>
+    [Math.round(mesh.position.x / 6), Math.round(mesh.position.y / 4), Math.round(mesh.position.z / 6)].join('/'));
 
   return {
     interactables,
@@ -788,7 +785,11 @@ export function buildWorld(scene, textures) {
     flashlight,
     flashVolCone,
     jumpscareLight,
-    cctvRoomLight,
+    jumpscareRim,
+    securityKey,
+    securityFill,
+    securityIR,
+    stageCones: [stageConeL, stageConeR],
     fanBlades,
     ductFan,
     officeVentFan,
@@ -801,7 +802,6 @@ export function buildWorld(scene, textures) {
     tapeLedMat,
     dustParticles,
     freddyRig,
-    bonnieRig,
-    setQualityShadows
+    bonnieRig
   };
 }

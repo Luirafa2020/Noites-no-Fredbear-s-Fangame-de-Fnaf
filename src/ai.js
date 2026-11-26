@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import {
-  CAM_TRANSFORMS,
-  ROOM_LIGHT_CFGS,
+  SECURITY_VIEWS,
   FREDDY_SPOTS,
   BONNIE_SPOTS,
   saveState,
@@ -12,30 +11,6 @@ import {
 import { audio } from './audio.js';
 
 export function createGameController({ world, officeCamera, refreshMenuStars, showScreen }) {
-  const _tmpMouthWorld = new THREE.Vector3();
-  const _camFwd = new THREE.Vector3();
-  const _camRight = new THREE.Vector3();
-  const _camUp = new THREE.Vector3();
-  const _desiredMouth = new THREE.Vector3();
-
-  function updateRoomLightVisibility() {
-    if (game.mode === 'MENU' || game.mode === 'NEWSPAPER') {
-      const cfg = ROOM_LIGHT_CFGS[0];
-      world.cctvRoomLight.color.setHex(cfg.color);
-      world.cctvRoomLight.distance = cfg.dist;
-      world.cctvRoomLight.position.set(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
-      world.cctvRoomLight.intensity = cfg.intensity;
-    } else if (game.mode === 'PLAYING' && game.monitorOpen) {
-      const cfg = ROOM_LIGHT_CFGS[game.activeCam];
-      world.cctvRoomLight.color.setHex(cfg.color);
-      world.cctvRoomLight.distance = cfg.dist;
-      world.cctvRoomLight.position.set(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
-      world.cctvRoomLight.intensity = cfg.intensity;
-    } else {
-      world.cctvRoomLight.intensity = 0;
-    }
-  }
-
   function startJumpscare(who, origin = 'DOOR_L') {
     if (game.mode === 'JUMPSCARE' || game.mode === 'WIN' || game.mode === 'GAMEOVER') return;
     game.mode = 'JUMPSCARE';
@@ -45,16 +20,16 @@ export function createGameController({ world, officeCamera, refreshMenuStars, sh
     game.jumpscareElapsed = 0;
     game.jumpscareBiteDone = false;
     game.biteFlash = 0;
-    officeCamera.near = 0.03;
+    game.jumpscareLookX = officeCamera.rotation.x;
+    game.jumpscareLookY = officeCamera.rotation.y;
+    officeCamera.near = 0.035;
     officeCamera.updateProjectionMatrix();
-    updateRoomLightVisibility();
     audio.stopPhoneCall();
     audio.stopAudioLure();
     audio.setFanActive(false);
     audio.setLightBuzz(false);
     audio.setDreadLevel(0);
     audio.playJumpscare();
-    world.jumpscareLight.intensity = 9.0;
   }
 
   function toggleDoor(side) {
@@ -112,6 +87,7 @@ export function createGameController({ world, officeCamera, refreshMenuStars, sh
     const next = forceState !== null ? forceState : !game.monitorOpen;
     if (next === game.monitorOpen) return;
     game.monitorOpen = next;
+    game.camFlashAlpha = 0;
     game.staticBurst = 0.65;
     audio.playCamStatic(0.18, -12);
     audio.playClick(next ? 1100 : 620);
@@ -124,16 +100,15 @@ export function createGameController({ world, officeCamera, refreshMenuStars, sh
       world.panelR.lMat.emissive.setHex(0x222222);
       audio.setLightBuzz(false);
     }
-    updateRoomLightVisibility();
   }
 
   function switchCamera(idx) {
-    if (game.mode !== 'PLAYING' || !game.monitorOpen || idx === game.activeCam) return;
+    if (game.mode !== 'PLAYING' || !game.monitorOpen || !SECURITY_VIEWS[idx] || idx === game.activeCam) return;
     game.activeCam = idx;
+    game.camFlashAlpha = 0;
     game.staticBurst = 0.55;
     audio.playClick(980);
     audio.playCamStatic(0.11, -16);
-    updateRoomLightVisibility();
   }
 
   function triggerAudioLure() {
@@ -173,11 +148,6 @@ export function createGameController({ world, officeCamera, refreshMenuStars, sh
     game.camFlashAlpha = 1.0;
     game.power = Math.max(0, game.power - 0.8);
     audio.playFlashBulb();
-
-    const ct = CAM_TRANSFORMS[game.activeCam];
-    world.cctvRoomLight.position.set(ct.pos[0], ct.pos[1], ct.pos[2]);
-    world.cctvRoomLight.color.setHex(0xffffff);
-    world.cctvRoomLight.intensity = 22;
 
     if (animState.freddy.loc === game.activeCam) {
       animState.freddy.stunTimer = 6.5;
@@ -418,10 +388,10 @@ export function createGameController({ world, officeCamera, refreshMenuStars, sh
     audio.setLightBuzz(false);
     audio.setDreadLevel(0.6);
     audio.playDoorSlam(false);
-    updateRoomLightVisibility();
 
     world.officeLamp.intensity = 0;
     world.crtDeskGlow.intensity = 0;
+    world.hallLightL.intensity = world.hallLightR.intensity = 0;
     world.bulbMesh.visible = false;
     world.officeVolCone.visible = false;
     world.crtScreenMat.emissiveIntensity = 0;
@@ -515,59 +485,6 @@ export function createGameController({ world, officeCamera, refreshMenuStars, sh
       return;
     }
 
-    if (game.mode === 'JUMPSCARE') {
-      const attacker = game.jumpscareWho === 'bonnie' ? world.bonnieRig : world.freddyRig;
-      const other = game.jumpscareWho === 'bonnie' ? world.freddyRig : world.bonnieRig;
-      other.root.position.set(20, -10, 20);
-
-      const p = THREE.MathUtils.clamp(game.jumpscareElapsed / game.jumpscareDuration, 0, 1);
-
-      let dist = 1.65;
-      if (p < 0.10) {
-        const u = p / 0.10;
-        dist = THREE.MathUtils.lerp(1.65, 0.78, 1 - Math.pow(1 - u, 3));
-      } else if (p < 0.36) {
-        const u = (p - 0.10) / 0.26;
-        dist = THREE.MathUtils.lerp(0.78, 0.58, u);
-      } else if (p < 0.66) {
-        const u = (p - 0.36) / 0.30;
-        dist = THREE.MathUtils.lerp(0.58, 0.20, u * u);
-      } else {
-        dist = 0.20;
-      }
-
-      const originBlend = 1 - THREE.MathUtils.clamp(p / 0.16, 0, 1);
-      let sideOff = 0;
-      let vertOff = 0;
-      if (game.jumpscareOrigin === 'DOOR_L') sideOff = -0.58 * originBlend;
-      else if (game.jumpscareOrigin === 'DOOR_R') sideOff = 0.58 * originBlend;
-      else if (game.jumpscareOrigin === 'VENT') vertOff = 0.48 * originBlend;
-
-      const chompDip = p > 0.52 ? THREE.MathUtils.lerp(0, -0.025, Math.min(1, (p - 0.52) / 0.14)) : 0;
-
-      _camFwd.set(0, 0, -1).applyQuaternion(officeCamera.quaternion);
-      _camRight.set(1, 0, 0).applyQuaternion(officeCamera.quaternion);
-      _camUp.set(0, 1, 0).applyQuaternion(officeCamera.quaternion);
-
-      attacker.root.rotation.set(0, officeCamera.rotation.y, 0);
-      attacker.root.position.set(0, 0, 0);
-      attacker.root.updateMatrixWorld(true);
-
-      attacker.mouthAnchor.getWorldPosition(_tmpMouthWorld);
-
-      _desiredMouth.copy(officeCamera.position)
-        .addScaledVector(_camFwd, dist)
-        .addScaledVector(_camRight, sideOff)
-        .addScaledVector(_camUp, vertOff + chompDip);
-
-      attacker.root.position.sub(_tmpMouthWorld).add(_desiredMouth);
-
-      world.jumpscareLight.position.copy(officeCamera.position)
-        .addScaledVector(_camFwd, Math.min(0.14, dist * 0.5))
-        .addScaledVector(_camUp, 0.08);
-      return;
-    }
-
     const fSpot = FREDDY_SPOTS[animState.freddy.loc] || FREDDY_SPOTS[0];
     world.freddyRig.root.position.set(fSpot.x, fSpot.y, fSpot.z);
     world.freddyRig.root.rotation.set(0, fSpot.ry, 0);
@@ -591,7 +508,6 @@ export function createGameController({ world, officeCamera, refreshMenuStars, sh
     switchCamera,
     triggerAudioLure,
     triggerCameraFlash,
-    updateRoomLightVisibility,
     updateAnimatronics,
     triggerPowerOutage,
     updatePowerOutage,

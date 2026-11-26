@@ -1,10 +1,4 @@
 import * as THREE from 'three';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { saveState } from './config.js';
 
 export const volumetricMaterials = [];
 
@@ -55,7 +49,7 @@ export function createVolumetricConeMat(colorHex, opacity = 0.12) {
 
       void main() {
         float fresnel = pow(abs(dot(normalize(vNormal), normalize(vViewPos))), 2.0);
-        float vertFade = smoothstep(0.0, 0.85, vUv.y) * smoothstep(1.0, 0.68, vUv.y);
+        float vertFade = smoothstep(0.0, 0.85, vUv.y) * (1.0 - smoothstep(0.68, 1.0, vUv.y));
         float dust = 0.72 + 0.36 * noise(vWorldPos.xy * 3.5 + vec2(uTime * 0.18, -uTime * 0.25));
         gl_FragColor = vec4(uColor, uOpacity * fresnel * vertFade * dust);
       }
@@ -69,121 +63,190 @@ export function createVolumetricConeMat(colorHex, opacity = 0.12) {
   return mat;
 }
 
-export const HorrorCRTShader = {
-  uniforms: {
-    tDiffuse: { value: null },
-    uTime: { value: 0 },
-    uIsCCTV: { value: 0.0 },
-    uGlitch: { value: 0.0 },
-    uPowerOut: { value: 0.0 },
-    uDanger: { value: 0.0 },
-    uBiteFlash: { value: 0.0 }
-  },
-  vertexShader: `
-    varying vec2 vUv;
-    void main() {
-      vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: `
-    uniform sampler2D tDiffuse;
-    uniform float uTime;
-    uniform float uIsCCTV;
-    uniform float uGlitch;
-    uniform float uPowerOut;
-    uniform float uDanger;
-    uniform float uBiteFlash;
-    varying vec2 vUv;
+const displayFragment = `
+  uniform sampler2D uScene;
+  uniform vec2 uSize;
+  uniform vec3 uTint;
+  uniform float uGain;
+  uniform float uTime;
+  uniform float uSignal;
+  uniform float uNoise;
+  uniform float uCamera;
+  uniform float uGlitch;
+  uniform float uDanger;
+  uniform float uBite;
+  uniform float uPowerOut;
+  uniform bool uCCTV;
+  uniform bool uBloom;
+  varying vec2 vUv;
 
-    float hash(vec2 p) {
-      return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-    }
+  float hash(vec2 p) {
+    vec3 v = fract(vec3(p.xyx) * 0.1031);
+    v += dot(v, v.yzx + 33.33);
+    return fract((v.x + v.y) * v.z);
+  }
 
-    void main() {
-      vec2 uv = vUv;
-      if (uIsCCTV > 0.5) {
-        vec2 c = uv - 0.5;
-        uv = uv + c * (dot(c, c) * 0.20);
-      }
-      if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+  float luma(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+  }
+
+  void main() {
+    vec2 uv = vUv;
+    vec2 center = uv * 2.0 - 1.0;
+    float radius = dot(center * vec2(0.84, 1.0), center * vec2(0.84, 1.0));
+    float tracking = 0.0;
+    if (uCCTV) {
+      uv = 0.5 + (uv - 0.5) * (1.0 + 0.048 * radius);
+      tracking = 1.0 - smoothstep(0.012, 0.043, abs(fract(uv.y + uTime * 0.22) - 0.19));
+      float row = floor(uv.y * uSize.y * 0.32);
+      float jitter = hash(vec2(row, uSignal + uCamera * 29.0)) - 0.5;
+      uv.x += jitter * (0.001 + uGlitch * 0.021) + tracking * uGlitch * 0.016;
+      if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+        gl_FragColor = vec4(0.006, 0.009, 0.009, 1.0);
         return;
       }
-
-      // Periodic VHS tracking bar when CCTV is active
-      float trackBand = smoothstep(0.04, 0.0, abs(fract(uv.y - uTime * 0.17) - 0.18));
-      uv.x += uIsCCTV * trackBand * 0.008 * sin(uTime * 42.0);
-
-      // Horizontal signal tear on glitch
-      float tear = step(0.88 - uGlitch * 0.36, sin(uv.y * 34.0 + uTime * 23.0)) * uGlitch * 0.072;
-      uv.x += tear * (hash(vec2(floor(uv.y * 92.0), uTime)) - 0.5);
-
-      float shift = (0.00055 + uIsCCTV * 0.0022 + uGlitch * 0.016 + uDanger * 0.0012 + uBiteFlash * 0.025);
-      float r = texture2D(tDiffuse, uv + vec2(shift, 0.0)).r;
-      float g = texture2D(tDiffuse, uv).g;
-      float b = texture2D(tDiffuse, uv - vec2(shift, 0.0)).b;
-      vec3 col = vec3(r, g, b);
-
-      // Subtle filmic split-tone grading in office mode
-      if (uIsCCTV < 0.5) {
-        float lum = dot(col, vec3(0.299, 0.587, 0.114));
-        vec3 shadowTint = vec3(0.86, 0.91, 1.05);
-        vec3 warmTint = vec3(1.06, 0.99, 0.90);
-        col *= mix(shadowTint, warmTint, smoothstep(0.08, 0.55, lum));
-        col = pow(max(col, vec3(0.0)), vec3(1.04));
-      }
-
-      // Film grain & CRT snow
-      float grain = (hash(uv * 540.0 + uTime * 43.0) - 0.5);
-      col += grain * (0.024 + uIsCCTV * 0.075 + uGlitch * 0.25);
-
-      if (uIsCCTV > 0.5) {
-        float luma = dot(col, vec3(0.299, 0.587, 0.114));
-        vec3 irCol = mix(col, vec3(luma * 0.54, luma * 1.18, luma * 0.68), 0.64);
-        // Preserve bright white eye-shine & specular peaks
-        irCol = mix(irCol, col * 1.15, smoothstep(0.62, 0.95, luma));
-        float scan = 0.86 + 0.14 * sin(uv.y * 510.0 + uTime * 11.0);
-        col = irCol * scan * 1.24;
-        col += trackBand * vec3(0.04, 0.09, 0.05);
-      }
-
-      float dist = distance(vUv, vec2(0.5));
-      float vigStrength = 0.58 + uDanger * 0.34 + uPowerOut * 0.44 + uBiteFlash * 0.95;
-      float vig = smoothstep(0.96, 0.18, dist * (0.86 + vigStrength * 0.50));
-      col *= mix(0.20, 1.0, vig);
-
-      if (uDanger > 0.35) {
-        float pulse = (0.5 + 0.5 * sin(uTime * 8.5)) * (uDanger - 0.35);
-        col.r += dist * pulse * 0.36;
-      }
-      if (uBiteFlash > 0.01) {
-        col = mix(col, vec3(0.78, 0.03, 0.04), uBiteFlash * 0.68);
-      }
-
-      gl_FragColor = vec4(col, 1.0);
     }
-  `
-};
 
-export function setupPostProcessing(renderer, scene, initialCamera) {
-  try {
-    const composer = new EffectComposer(renderer);
-    composer.addPass(new RenderPass(scene, initialCamera));
-    const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(Math.floor(window.innerWidth / 2), Math.floor(window.innerHeight / 2)),
-      saveState.quality === 'high' ? 0.42 : 0.0,
-      0.46,
-      0.74
-    );
-    bloomPass.enabled = saveState.quality === 'high';
-    composer.addPass(bloomPass);
-    const crtPass = new ShaderPass(HorrorCRTShader);
-    composer.addPass(crtPass);
-    composer.addPass(new OutputPass());
-    return { composer, bloomPass, crtPass };
-  } catch (e) {
-    console.warn('EffectComposer fallback:', e);
-    return { composer: null, bloomPass: null, crtPass: null };
+    vec3 color = texture2D(uScene, uv).rgb;
+    if (uCCTV) {
+      vec2 ghost = vec2((2.5 + 4.0 * uGlitch) / uSize.x, 0.0);
+      color = mix(color, texture2D(uScene, uv - ghost).rgb, 0.09 + 0.16 * uGlitch);
+      float sensor = luma(color) * uGain;
+      color = mix(color * uGain, sensor * uTint, 0.72);
+      color *= (1.0 - 0.47 * smoothstep(0.15, 1.63, radius));
+    } else {
+      if (uBloom) {
+        vec2 spread = vec2(3.5) / uSize;
+        vec3 halo = texture2D(uScene, uv + spread).rgb + texture2D(uScene, uv - spread).rgb
+          + texture2D(uScene, uv + vec2(spread.x, -spread.y)).rgb
+          + texture2D(uScene, uv + vec2(-spread.x, spread.y)).rgb;
+        color += max(halo * 0.25 - vec3(0.58), 0.0) * 0.19;
+      }
+      if (uGlitch > 0.15) {
+        float separation = uGlitch * 0.007 + uBite * 0.009;
+        color.r = texture2D(uScene, uv + vec2(separation, 0.0)).r;
+        color.b = texture2D(uScene, uv - vec2(separation, 0.0)).b;
+      }
+      color *= mix(vec3(0.87, 0.95, 1.07), vec3(1.07, 0.99, 0.88),
+        smoothstep(0.02, 0.56, luma(color)));
+      color *= 1.0 - (0.27 + uPowerOut * 0.32 + uDanger * 0.15) * smoothstep(0.17, 1.62, radius);
+      color.r += radius * uDanger * (0.006 + 0.012 * sin(uTime * 8.5));
+      color = mix(color, vec3(0.52, 0.010, 0.009), uBite * 0.36);
+    }
+
+    gl_FragColor = vec4(color, 1.0);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+
+    if (uCCTV) {
+      vec2 sampleCell = floor(uv * uSize);
+      float grain = hash(sampleCell + vec2(uNoise * 13.0, uCamera * 7.0)) - 0.5;
+      float field = 1.0 - 0.10 * (0.5 + 0.5 * cos(uv.y * uSize.y * 3.14159 + mod(uNoise, 2.0) * 3.14159));
+      gl_FragColor.rgb = gl_FragColor.rgb * field + grain * (0.065 - min(luma(gl_FragColor.rgb), 0.6) * 0.060);
+      gl_FragColor.rgb += tracking * (0.009 + uGlitch * 0.046);
+      float dropout = step(0.972, hash(vec2(sampleCell.y, uNoise + uCamera))) * uGlitch;
+      float snow = hash(sampleCell * 1.81 + uNoise * 11.0);
+      gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(snow * 0.73), min(0.82, dropout + max(0.0, uGlitch - 0.16) * 0.59));
+    }
   }
+`;
+
+export function createViewRenderer(renderer, scene) {
+  const type = renderer.extensions.has('EXT_color_buffer_float') ? THREE.HalfFloatType : THREE.UnsignedByteType;
+  const office = new THREE.WebGLRenderTarget(1, 1, { type, depthBuffer: true });
+  const feed = new THREE.WebGLRenderTarget(1, 1, { type, depthBuffer: true });
+  const uniforms = {
+    uScene: { value: null },
+    uSize: { value: new THREE.Vector2() },
+    uTint: { value: new THREE.Vector3(1, 1, 1) },
+    uGain: { value: 1 },
+    uTime: { value: 0 },
+    uSignal: { value: 0 },
+    uNoise: { value: 0 },
+    uCamera: { value: 0 },
+    uGlitch: { value: 0 },
+    uDanger: { value: 0 },
+    uBite: { value: 0 },
+    uPowerOut: { value: 0 },
+    uCCTV: { value: false },
+    uBloom: { value: false }
+  };
+
+  const screenMaterial = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = vec4(position.xy, 0.0, 1.0);
+      }
+    `,
+    fragmentShader: displayFragment,
+    depthTest: false,
+    depthWrite: false
+  });
+  const screenGeometry = new THREE.BufferGeometry();
+  screenGeometry.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
+  screenGeometry.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 2, 0, 0, 2], 2));
+  const screen = new THREE.Mesh(screenGeometry, screenMaterial);
+  screen.frustumCulled = false;
+  const display = new THREE.Scene();
+  display.add(screen);
+  const screenCamera = new THREE.Camera();
+
+  let lastCamera = null;
+  let nextCapture = 0;
+  let signalFrame = 0;
+  let lastFlash = 0;
+
+  function resize(width, height, high) {
+    const outputScale = Math.min(window.devicePixelRatio || 1, high ? 1.35 : 1.0,
+      Math.sqrt((high ? 2550000 : 1440000) / (width * height)));
+    renderer.setPixelRatio(outputScale);
+    renderer.setSize(width, height, false);
+    const officeScale = Math.min(outputScale, Math.sqrt((high ? 1870000 : 940000) / (width * height)));
+    office.setSize(Math.max(1, Math.round(width * officeScale)), Math.max(1, Math.round(height * officeScale)));
+    const feedScale = Math.min(outputScale, (high ? 770 : 560) / Math.max(width, height));
+    feed.setSize(Math.max(1, Math.round(width * feedScale)), Math.max(1, Math.round(height * feedScale)));
+    lastCamera = null;
+  }
+
+  function render(camera, frame) {
+    const target = frame.cctv ? feed : office;
+    const switched = camera !== lastCamera;
+    const flashStarted = frame.flash > lastFlash + 0.16;
+    if (!frame.cctv || switched || flashStarted || frame.time >= nextCapture) {
+      renderer.setRenderTarget(target);
+      renderer.render(scene, camera);
+      renderer.setRenderTarget(null);
+      if (frame.cctv) {
+        signalFrame = (signalFrame + 1) % 4096;
+        const period = 1 / (frame.high ? 24 : 20);
+        nextCapture = switched || flashStarted || frame.time - nextCapture >= period
+          ? frame.time + period : nextCapture + period;
+      }
+    }
+    lastCamera = camera;
+    lastFlash = frame.flash;
+
+    uniforms.uScene.value = target.texture;
+    uniforms.uSize.value.set(target.width, target.height);
+    uniforms.uCCTV.value = frame.cctv;
+    uniforms.uBloom.value = frame.high && !frame.cctv;
+    uniforms.uCamera.value = frame.channel;
+    uniforms.uTime.value = frame.time % 3600;
+    uniforms.uSignal.value = signalFrame;
+    uniforms.uNoise.value = Math.floor(uniforms.uTime.value * 30);
+    uniforms.uGlitch.value = frame.glitch;
+    uniforms.uDanger.value = frame.danger;
+    uniforms.uBite.value = frame.bite;
+    uniforms.uPowerOut.value = frame.powerOut ? 1 : 0;
+    if (frame.cctv) {
+      uniforms.uTint.value.fromArray(frame.view.tint);
+      uniforms.uGain.value = frame.view.gain + frame.flash * 0.24;
+    }
+    renderer.render(display, screenCamera);
+  }
+
+  return { resize, render };
 }

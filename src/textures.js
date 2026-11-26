@@ -360,23 +360,26 @@ export function buildTextures() {
 
   // Plush / corroded springlock fabric maps
   const plushFreddy = makeMottledSuit(
-    [156, 124, 28],
-    'rgba(34, 22, 6, 0.38)',
-    'rgba(208, 174, 62, 0.22)',
-    'rgba(56, 22, 10, 0.24)'
+    [168, 126, 67],
+    'rgba(47, 26, 12, 0.34)',
+    'rgba(222, 176, 103, 0.20)',
+    'rgba(66, 32, 17, 0.24)'
   );
   const plushBonnie = makeMottledSuit(
-    [146, 128, 36],
-    'rgba(28, 30, 10, 0.42)',
-    'rgba(198, 178, 66, 0.20)',
-    'rgba(44, 24, 8, 0.26)'
+    [154, 135, 69],
+    'rgba(39, 34, 14, 0.36)',
+    'rgba(213, 185, 103, 0.21)',
+    'rgba(52, 41, 19, 0.26)'
   );
 
   const plushNormal = createNormalFromHeight(512, 512, (ctx, w, h) => {
     const img = ctx.createImageData(w, h);
     const d = img.data;
     for (let i = 0; i < d.length; i += 4) {
-      const v = 90 + ((Math.random() * 88) | 0);
+      const x = (i / 4) % w;
+      const y = Math.floor(i / (4 * w));
+      const weave = Math.cos(x * Math.PI / 2) * (8 + 4 * Math.cos(y * Math.PI / 4));
+      const v = 126 + weave + (Math.random() - 0.5) * 25;
       d[i] = v; d[i + 1] = v; d[i + 2] = v; d[i + 3] = 255;
     }
     ctx.putImageData(img, 0, 0);
@@ -466,8 +469,8 @@ export function buildTextures() {
     ctx.beginPath(); ctx.arc(cx, cy, pupilSize, 0, Math.PI * 2); ctx.fill();
   }, 1, 1, true);
 
-  const eyeFreddyTex = buildEyeTexture('#9fb8d4', '#506b8a', '#1b2634', 42);
-  const eyeBonnieTex = buildEyeTexture('#b5abc9', '#675a82', '#231c33', 38);
+  const eyeFreddyTex = buildEyeTexture('#aec8de', '#526f8a', '#1b2634', 42);
+  const eyeBonnieTex = buildEyeTexture('#afdada', '#4d878a', '#1b343d', 39);
 
   const teethTex = createCanvasTex(256, 256, (ctx, w, h) => {
     const g = ctx.createLinearGradient(0, 0, 0, h);
